@@ -39,9 +39,10 @@ import os
 import string
 import sys
 import time
+import ConfigParser
 
 # Third-Party Modules
-from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from argparse import ArgumentParser, RawDescriptionHelpFormatter, FileType
 from boto import ec2, utils
 
 # AWS Credentials
@@ -64,6 +65,7 @@ PROFILE = 0
 
 verbose = 0
 silent = False
+self_id = None
 
 class CLIError(Exception):
     '''Generic exception to raise and log different fatal errors.'''
@@ -78,11 +80,11 @@ class CLIError(Exception):
 def get_self_instance_id():
     if not silent and verbose > 0:
         print "Enquiring self instance id"
-    metadata = utils.get_instance_metadata()
+    metadata = {}  # utils.get_instance_metadata()
     instance_id = metadata['instance-id'] if metadata.has_key('instance-id') else None
     if not silent and verbose > 0:
         print "Instance Id: %s" % (instance_id)
-    
+
     return instance_id
 
 def get_instances_in_regions(regions, filters=None):
@@ -94,15 +96,21 @@ def get_instances_in_regions(regions, filters=None):
     instances_in_regions = []
     for region in ec2.regions():
         if region.name in regions:
+            if not silent and verbose > 1:
+                print "Connecting %s region" % (region.name)
             conn = ec2.connect_to_region(region.name, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
             reservations = conn.get_all_instances(filters=filters)
+            i = 0
             for r in reservations:
                 for instance in r.instances:
                     instances_in_regions.append(instance)
-    
+                    i += 1
+            if not silent and verbose > 0:
+                print "Found %d instances in %s region" % (i, region.name)
+
     if not silent:
         print "Got %s instances" % (len(instances_in_regions))
-    
+
     return instances_in_regions
 
 def create_ami(instance):
@@ -112,7 +120,7 @@ def create_ami(instance):
     name = (instance.tags['Name'].replace(' ', '_') if instance.tags.has_key('Name') else instance.id) + '_Backup_' + time.strftime('%Y%m%dT%H%M%SZ0000', create_time)
     desc = (instance.tags['Name'] if instance.tags.has_key('Name') else instance.id) + ' Backup on ' + time.asctime(create_time)
 
-    no_reboot = instance.tags.has_key(NO_REBOOT_TAG) or (instance.id == get_self_instance_id())
+    no_reboot = instance.tags.has_key(NO_REBOOT_TAG) or (instance.id == self_id)
 
     if not silent and verbose > 1:
         print '''Image parameters:
@@ -122,14 +130,21 @@ def create_ami(instance):
   ''' % (name, desc, instance.id)
 
     ami_id = instance.create_image(name, description=desc, no_reboot=no_reboot)
-    image = instance.connection.get_all_images(image_ids= [ami_id])[0]
-    image.add_tag(STAMP_TAG, time.mktime(create_time))
-    image.add_tag(SOURCE_TAG, instance.id)
-
     if not silent:
         print "Created AMI: %s" % (ami_id)
 
-    remove_old_amis(instance)
+    # Wait for the image to appear
+    time.sleep(0.2)
+
+    if not silent and verbose > 0:
+        print "Tagging image"
+    image = instance.connection.get_all_images(image_ids=[ami_id])[0]
+    image.add_tag(STAMP_TAG, time.mktime(create_time))
+    image.add_tag(SOURCE_TAG, instance.id)
+
+    if not silent and verbose > 1:
+        print "Created AMI tags: %s" % (image.tags)
+
     return ami_id
 
 def image_date_compare(ami1, ami2):
@@ -141,20 +156,25 @@ def image_date_compare(ami1, ami2):
 
 def remove_old_amis(instance):
     conn = instance.connection
-    keep = instance.tags[FILTER_TAG] if (instance.tags.has_key(FILTER_TAG) and instance.tags[FILTER_TAG].isdigit()) else DEFAULT_KEEP
+    keep = int(instance.tags[FILTER_TAG]) if (instance.tags.has_key(FILTER_TAG) and instance.tags[FILTER_TAG].isdigit()) else DEFAULT_KEEP
     if not silent and verbose > 0:
         print "Removing old images for %s, keeping %d" % (instance.id, keep)
+        print "Retrieving images"
 
-    images = [image for image in conn.get_all_images(filters={'tag:'+SOURCE_TAG: instance.id})]
+    images = [image for image in conn.get_all_images(filters={'tag:' + SOURCE_TAG: instance.id})]
     images.sort(image_date_compare)
+
+    if not silent and verbose > 0:
+        print "Got %d images" % (len(images))
+
     for image in images[:-keep]:
         conn.deregister_image(image.id, delete_snapshot=True)
         if not silent:
             print "Image %s deregistered" % (image.id)
 
-def main(argv=None): # IGNORE:C0111
+def main(argv=None):  # IGNORE:C0111
     '''Command line options.'''
-    
+
     if argv is None:
         argv = sys.argv
     else:
@@ -186,25 +206,48 @@ USAGE
     try:
         # Setup argument parser
         parser = ArgumentParser(description=program_license, formatter_class=RawDescriptionHelpFormatter)
-        parser.add_argument("--cron", dest="silent", action="store_true", help="Suppress all output for cron run [default: %(default)s]")
+        parser.add_argument("--cron", dest="silent", action="store_true", help="suppress all output for cron run [default: %(default)s]")
+        parser.add_argument("-C", "--credential-file", dest="credential_file_name", metavar="FILE",
+                             help="config file with AWS credentials [default: %(default)s], overrides environment settings", default="credentials.ini")
+        parser.add_argument("-O", "--aws-access-key", dest="aws_access_key", metavar="KEY", default=os.getenv("AWS_ACCESS_KEY"),
+                            help="AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).")
+        parser.add_argument("-W", "--aws-secret-key", dest="aws_secret_key", metavar="KEY",  default=os.getenv("AWS_SECRET_KEY"),
+                            help="AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).")
         parser.add_argument("-v", "--verbose", dest="verbose", action="count", help="set verbosity level [default: %(default)s]")
         parser.add_argument('-V', '--version', action='version', version=program_version_message)
         region_name_list = [region.name for region in ec2.regions()]
         parser.add_argument(dest="regions", help="region(s) to backup [default: %s]" % (region_name_list), metavar="region", nargs='*', default=region_name_list)
-        
+
         # Process arguments
         args = parser.parse_args()
 
-        global verbose, silent        
+        config = ConfigParser.ConfigParser()
+        config.read(os.path.abspath(args.credential_file_name))
+        
+        if args.credential_file_name == None and (args.aws_access_key == None or args.aws_secret_key == None):
+            raise CLIError("AWS credentials must be specified.")
+
+        global verbose, silent
         regions = args.regions
         verbose = args.verbose
         silent = args.silent
         
+        print args
+        print  config.has_section('AWS')
+        return 333
+        
         if not silent and verbose > 0:
             print "Verbose mode on, level %d" % (verbose)
-        
-        instances = get_instances_in_regions(regions, {'tag:' + FILTER_TAG: '*'})
-        
+
+        global self_id
+        self_id = get_self_instance_id()
+        for instance in get_instances_in_regions(regions, {'tag:' + FILTER_TAG: '*'}):
+            create_ami(instance)
+            remove_old_amis(instance)
+
+        if not silent:
+            print "Done."
+
         return 0
     except KeyboardInterrupt:
         ### handle keyboard interrupt ###

@@ -42,16 +42,13 @@ import time
 import ConfigParser
 
 # Third-Party Modules
-from argparse import ArgumentParser, RawDescriptionHelpFormatter, FileType
+from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from boto import ec2, utils
-
-# AWS Credentials
-from credentials import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
 __all__ = []
 __version__ = 0.1
 __date__ = '2013-05-22'
-__updated__ = '2013-05-22'
+__updated__ = '2013-05-23'
 
 # Settings
 FILTER_TAG = 'Backup'
@@ -59,23 +56,26 @@ NO_REBOOT_TAG = 'NoReboot'
 DEFAULT_KEEP = 7
 STAMP_TAG = 'AutoBackupTimestamp'
 SOURCE_TAG = 'SourceInstanceId'
-DEBUG = 1
-TESTRUN = 1
+DEBUG = 0
+TESTRUN = 0
 PROFILE = 0
 
+# Globals
 verbose = 0
 silent = False
 self_id = None
+aws_access_key = None
+aws_secret_key = None
 
 class CLIError(Exception):
     '''Generic exception to raise and log different fatal errors.'''
     def __init__(self, msg):
         super(CLIError).__init__(type(self))
-        self.msg = "E: %s" % msg
+        self.message = "ERROR: %s" % msg
     def __str__(self):
-        return self.msg
+        return self.message
     def __unicode__(self):
-        return self.msg
+        return self.message
 
 def get_self_instance_id():
     if not silent and verbose > 0:
@@ -98,7 +98,7 @@ def get_instances_in_regions(regions, filters=None):
         if region.name in regions:
             if not silent and verbose > 1:
                 print "Connecting %s region" % (region.name)
-            conn = ec2.connect_to_region(region.name, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
+            conn = ec2.connect_to_region(region.name, aws_access_key_id=aws_access_key, aws_secret_access_key=aws_secret_key)
             reservations = conn.get_all_instances(filters=filters)
             i = 0
             for r in reservations:
@@ -173,7 +173,7 @@ def remove_old_amis(instance):
             print "Image %s deregistered" % (image.id)
 
 def main(argv=None):  # IGNORE:C0111
-    '''Command line options.'''
+    '''Processing command line options and config file.'''
 
     if argv is None:
         argv = sys.argv
@@ -208,10 +208,10 @@ USAGE
         parser = ArgumentParser(description=program_license, formatter_class=RawDescriptionHelpFormatter)
         parser.add_argument("--cron", dest="silent", action="store_true", help="suppress all output for cron run [default: %(default)s]")
         parser.add_argument("-C", "--credential-file", dest="credential_file_name", metavar="FILE",
-                             help="config file with AWS credentials [default: %(default)s], overrides environment settings", default="credentials.ini")
-        parser.add_argument("-O", "--aws-access-key", dest="aws_access_key", metavar="KEY", default=os.getenv("AWS_ACCESS_KEY"),
+                             help="config file with AWS credentials [default: ccredentials.ini], overrides environment settings")
+        parser.add_argument("-O", "--aws-access-key", dest="aws_access_key", metavar="KEY",
                             help="AWS Access Key ID. Defaults to the value of the AWS_ACCESS_KEY environment variable (if set).")
-        parser.add_argument("-W", "--aws-secret-key", dest="aws_secret_key", metavar="KEY",  default=os.getenv("AWS_SECRET_KEY"),
+        parser.add_argument("-W", "--aws-secret-key", dest="aws_secret_key", metavar="KEY",
                             help="AWS Secret Access Key. Defaults to the value of the AWS_SECRET_KEY environment variable (if set).")
         parser.add_argument("-v", "--verbose", dest="verbose", action="count", help="set verbosity level [default: %(default)s]")
         parser.add_argument('-V', '--version', action='version', version=program_version_message)
@@ -221,24 +221,53 @@ USAGE
         # Process arguments
         args = parser.parse_args()
 
-        config = ConfigParser.ConfigParser()
-        config.read(os.path.abspath(args.credential_file_name))
-        
-        if args.credential_file_name == None and (args.aws_access_key == None or args.aws_secret_key == None):
-            raise CLIError("AWS credentials must be specified.")
-
-        global verbose, silent
+        global verbose, silent, aws_access_key, aws_secret_key
         regions = args.regions
         verbose = args.verbose
         silent = args.silent
-        
-        print args
-        print  config.has_section('AWS')
-        return 333
-        
+
         if not silent and verbose > 0:
             print "Verbose mode on, level %d" % (verbose)
 
+        if (args.aws_access_key == None or args.aws_secret_key == None):
+            aws_access_key = os.getenv("AWS_ACCESS_KEY")
+            aws_secret_key = os.getenv("AWS_SECRET_KEY")
+            if not silent and verbose > 2:
+                print "Access key from env: %s\nSecret key from env: %s" % (aws_access_key, aws_secret_key)
+            
+            config_file_path = os.path.abspath(args.credential_file_name if args.credential_file_name else "credentials.ini")
+            if not silent and verbose > 0:
+                print "Reading config file: %s" % (config_file_path)
+            try:
+                config = ConfigParser.ConfigParser()
+                config.read(config_file_path)
+                if not silent and verbose > 0:
+                    print "Got sections: %s" % (config.sections())
+                    
+                if (not config.sections()) and (not args.credential_file_name) and aws_access_key and aws_secret_key:
+                    if not silent and verbose > 0:
+                        print "Missing or empty default config file, falling back to env"
+                else:
+                    aws_access_key = config.get('AWS', 'AWSAccessKeyId')
+                    aws_secret_key = config.get('AWS', 'AWSSecretKey')
+                    if not silent and verbose > 2:
+                        print "Access key from file: %s\nSecret key from file: %s" % (aws_access_key, aws_secret_key)
+            except (ConfigParser.NoOptionError, ConfigParser.NoSectionError):
+                raise CLIError("AWS credentials must be specified.")
+        else:
+            if args.credential_file_name:
+                raise CLIError("You can not specify both credentials and a config file.")
+            aws_access_key = args.aws_access_key
+            aws_secret_key = args.aws_secret_key
+            if not silent and verbose > 2:
+                print "Access key from args: %s\nSecret key from args: %s" % (aws_access_key, aws_secret_key)
+
+        if not silent and verbose > 2:
+            print "Access key: %s\nSecret key: %s" % (aws_access_key, aws_secret_key)
+
+        if (aws_access_key == None or aws_secret_key == None):
+            raise CLIError("AWS credentials must be specified.")
+        
         global self_id
         self_id = get_self_instance_id()
         for instance in get_instances_in_regions(regions, {'tag:' + FILTER_TAG: '*'}):
@@ -252,11 +281,11 @@ USAGE
     except KeyboardInterrupt:
         ### handle keyboard interrupt ###
         return 0
-    except Exception, e:
+    except Exception as e:
         if DEBUG or TESTRUN:
             raise(e)
         indent = len(program_name) * " "
-        sys.stderr.write(program_name + ": " + repr(e) + "\n")
+        sys.stderr.write(program_name + ": " + e.message + "\n")
         sys.stderr.write(indent + "  for help use --help")
         return 2
 

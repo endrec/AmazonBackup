@@ -1,4 +1,4 @@
-#!/usr/local/bin/python2.7
+#!/bin/env python2.7
 # encoding: utf-8
 '''
 backup -- Backup script for AWS
@@ -46,7 +46,7 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from boto import ec2, utils
 
 __all__ = []
-__version__ = 0.1
+__version__ = 0.3
 __date__ = '2013-05-22'
 __updated__ = '2013-05-23'
 
@@ -286,7 +286,7 @@ USAGE
             raise(e)
         indent = len(program_name) * " "
         sys.stderr.write(program_name + ": " + e.message + "\n")
-        sys.stderr.write(indent + "  for help use --help")
+        sys.stderr.write(indent + "  for help use --help\n")
         return 2
 
 if __name__ == "__main__":

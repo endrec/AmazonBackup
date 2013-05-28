@@ -8,9 +8,9 @@ To backup an instance it needs to have a tag 'Backup' (see FILTER_TAG),
 its value defines the number of images to keep.
 
 @author:     Endre Czirbesz
-        
+
 @copyright:  2013 Ultrasis. All rights reserved.
-        
+
 @license:    Permission is hereby granted, free of charge, to any person obtaining a
             copy of this software and associated documentation files (the
             "Software"), to deal in the Software without restriction, including
@@ -46,9 +46,9 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from boto import ec2, utils
 
 __all__ = []
-__version__ = 0.3
+__version__ = 0.4
 __date__ = '2013-05-22'
-__updated__ = '2013-05-23'
+__updated__ = '2013-05-28'
 
 # Settings
 FILTER_TAG = 'Backup'
@@ -80,7 +80,7 @@ class CLIError(Exception):
 def get_self_instance_id():
     if not silent and verbose > 0:
         print "Enquiring self instance id"
-    metadata = {}  # utils.get_instance_metadata()
+    metadata = utils.get_instance_metadata()
     instance_id = metadata['instance-id'] if metadata.has_key('instance-id') else None
     if not silent and verbose > 0:
         print "Instance Id: %s" % (instance_id)
@@ -193,10 +193,10 @@ def main(argv=None):  # IGNORE:C0111
 
   Created by Endre Czirbesz on %s.
   Copyright 2013 Ultrasis. All rights reserved.
-  
+
   Licensed under the MIT License (MIT)
   http://opensource.org/licenses/MIT
-  
+
   Distributed on an "AS IS" basis without warranties
   or conditions of any kind, either express or implied.
 
@@ -234,7 +234,7 @@ USAGE
             aws_secret_key = os.getenv("AWS_SECRET_KEY")
             if not silent and verbose > 2:
                 print "Access key from env: %s\nSecret key from env: %s" % (aws_access_key, aws_secret_key)
-            
+
             config_file_path = os.path.abspath(args.credential_file_name if args.credential_file_name else "credentials.ini")
             if not silent and verbose > 0:
                 print "Reading config file: %s" % (config_file_path)
@@ -243,7 +243,7 @@ USAGE
                 config.read(config_file_path)
                 if not silent and verbose > 0:
                     print "Got sections: %s" % (config.sections())
-                    
+
                 if (not config.sections()) and (not args.credential_file_name) and aws_access_key and aws_secret_key:
                     if not silent and verbose > 0:
                         print "Missing or empty default config file, falling back to env"
@@ -267,7 +267,7 @@ USAGE
 
         if (aws_access_key == None or aws_secret_key == None):
             raise CLIError("AWS credentials must be specified.")
-        
+
         global self_id
         self_id = get_self_instance_id()
         for instance in get_instances_in_regions(regions, {'tag:' + FILTER_TAG: '*'}):

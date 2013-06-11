@@ -132,7 +132,6 @@ def create_ami(instance):
     name = (instance.tags['Name'].replace(' ', '_') if instance.tags.has_key('Name') else instance.id) + '_Backup_' + create_time.strftime('%Y%m%dT%H%M%SZ')
     desc = (instance.tags['Name'] if instance.tags.has_key('Name') else instance.id) + ' Backup on ' + create_time.ctime() + create_time.tzinfo
 
-#list(rrulestr("FREQ=MONTHLY;BYDAY=SA;BYSETPOS=3"+";byhour=0;byminute=0;bysecond=0", dtstart=datetime.datetime.fromtimestamp(1370309070.0)))
     reboot_rule_str = instance.tags[REBOOT_RRULE_TAG] if instance.tags.has_key(REBOOT_RRULE_TAG) else None
     force_reboot = False
     if reboot_rule_str:
@@ -143,7 +142,7 @@ def create_ami(instance):
             if not silent:
                 print e.message
 
-    no_reboot = ((not force_reboot) and instance.tags.has_key(NO_REBOOT_TAG)) or (instance.id == self_id)
+    no_reboot = ((not force_reboot) and (instance.tags.has_key(NO_REBOOT_TAG) or instance.tags.has_key(REBOOT_RRULE_TAG))) or (instance.id == self_id)
     if not no_reboot:
         instance.add_tag(REBOOT_STAMP_TAG, create_time_ISO)
 

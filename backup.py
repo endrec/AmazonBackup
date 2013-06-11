@@ -6,6 +6,10 @@ backup -- Backup script for AWS
 backup is a script which creates backup images (AMIs) from AWS EC2 and VPC instances.
 To backup an instance it needs to have a tag 'Backup' (see FILTER_TAG),
 its value defines the number of images to keep.
+If there is a tag 'NoReboot' (see NO_REBOOT_TAG), the instance will not be rebooted,
+unless a 'RebootRRule' (see REBOOT_RRULE_TAG) tag is defined, and contains an
+iCalendar (RFC2445) formatted RRULE string. In that case the instance will be rebooted
+on the days defined by this rule.
 
 @author:     Endre Czirbesz
 
@@ -36,26 +40,33 @@ its value defines the number of images to keep.
 
 # Standard Modules
 import os
-import string
 import sys
 import time
+import pytz
 import ConfigParser
+from datetime import datetime
+from dateutil.rrule import rrulestr
+import dateutil.parser as parser
 
 # Third-Party Modules
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
-from boto import ec2, utils
+from boto import ec2, utils, exception
 
 __all__ = []
-__version__ = 0.4
+__version__ = 0.5
 __date__ = '2013-05-22'
-__updated__ = '2013-05-28'
+__updated__ = '2013-06-11'
 
 # Settings
 FILTER_TAG = 'Backup'
 NO_REBOOT_TAG = 'NoReboot'
+REBOOT_RRULE_TAG = 'RebootRRule'
+CONSISTENT_TAG = 'Consistent'
 DEFAULT_KEEP = 7
 STAMP_TAG = 'AutoBackupTimestamp'
+REBOOT_STAMP_TAG = 'LastRebootTime'
 SOURCE_TAG = 'SourceInstanceId'
+MAX_TRIES = 3
 DEBUG = 0
 TESTRUN = 0
 PROFILE = 0
@@ -116,11 +127,25 @@ def get_instances_in_regions(regions, filters=None):
 def create_ami(instance):
     if not silent and verbose > 0:
         print "Creating AMI"
-    create_time = time.gmtime()
-    name = (instance.tags['Name'].replace(' ', '_') if instance.tags.has_key('Name') else instance.id) + '_Backup_' + time.strftime('%Y%m%dT%H%M%SZ0000', create_time)
-    desc = (instance.tags['Name'] if instance.tags.has_key('Name') else instance.id) + ' Backup on ' + time.asctime(create_time)
+    create_time = datetime.now(pytz.utc)
+    create_time_ISO = create_time.isoformat()
+    name = (instance.tags['Name'].replace(' ', '_') if instance.tags.has_key('Name') else instance.id) + '_Backup_' + create_time.strftime('%Y%m%dT%H%M%SZ')
+    desc = (instance.tags['Name'] if instance.tags.has_key('Name') else instance.id) + ' Backup on ' + create_time.ctime() + create_time.tzinfo
 
-    no_reboot = instance.tags.has_key(NO_REBOOT_TAG) or (instance.id == self_id)
+#list(rrulestr("FREQ=MONTHLY;BYDAY=SA;BYSETPOS=3"+";byhour=0;byminute=0;bysecond=0", dtstart=datetime.datetime.fromtimestamp(1370309070.0)))
+    reboot_rule_str = instance.tags[REBOOT_RRULE_TAG] if instance.tags.has_key(REBOOT_RRULE_TAG) else None
+    force_reboot = False
+    if reboot_rule_str:
+        last_reboot = parser.parse(instance.tags[REBOOT_STAMP_TAG]) if instance.tags.has_key(REBOOT_STAMP_TAG) else parser.parse(instance.launch_time)
+        try:
+            force_reboot = True if rrulestr(reboot_rule_str+";byhour=0;byminute=0;bysecond=0", dtstart=last_reboot).before(datetime.now(pytz.utc)) else False
+        except ValueError as e:
+            if not silent:
+                print e.message
+
+    no_reboot = ((not force_reboot) and instance.tags.has_key(NO_REBOOT_TAG)) or (instance.id == self_id)
+    if not no_reboot:
+        instance.add_tag(REBOOT_STAMP_TAG, create_time_ISO)
 
     if not silent and verbose > 1:
         print '''Image parameters:
@@ -134,13 +159,22 @@ def create_ami(instance):
         print "Created AMI: %s" % (ami_id)
 
     # Wait for the image to appear
-    time.sleep(0.2)
-
     if not silent and verbose > 0:
         print "Tagging image"
-    image = instance.connection.get_all_images(image_ids=[ami_id])[0]
-    image.add_tag(STAMP_TAG, time.mktime(create_time))
+    tries_left = MAX_TRIES
+    image = None
+    while not image and tries_left:
+        try:
+            image = instance.connection.get_all_images(image_ids=[ami_id])[0]
+        except exception.EC2ResponseError as e:
+            if not silent:
+                print e.message
+            tries_left -= 1
+    
+    image.add_tag(STAMP_TAG, create_time_ISO)
     image.add_tag(SOURCE_TAG, instance.id)
+    if not no_reboot:
+        image.add_tag(CONSISTENT_TAG, "Yes")
 
     if not silent and verbose > 1:
         print "Created AMI tags: %s" % (image.tags)
@@ -154,23 +188,36 @@ def image_date_compare(ami1, ami2):
         return 0
     return 1
 
-def remove_old_amis(instance):
-    conn = instance.connection
-    keep = int(instance.tags[FILTER_TAG]) if (instance.tags.has_key(FILTER_TAG) and instance.tags[FILTER_TAG].isdigit()) else DEFAULT_KEEP
-    if not silent and verbose > 0:
-        print "Removing old images for %s, keeping %d" % (instance.id, keep)
-        print "Retrieving images"
-
-    images = [image for image in conn.get_all_images(filters={'tag:' + SOURCE_TAG: instance.id})]
+def get_images_for_instance(instance, filters=None):
+    if not filters:
+        filters = {'tag:' + SOURCE_TAG: instance.id}
+    elif not filters.has_key('tag:' + SOURCE_TAG):
+        filters['tag:' + SOURCE_TAG] = instance.id
+        
+    images = [image for image in instance.connection.get_all_images(filters=filters)]
     images.sort(image_date_compare)
 
     if not silent and verbose > 0:
         print "Got %d images" % (len(images))
 
-    for image in images[:-keep]:
-        conn.deregister_image(image.id, delete_snapshot=True)
-        if not silent:
-            print "Image %s deregistered" % (image.id)
+    return images
+
+def get_latest_consistent_image_id_for_instance(instance):
+    imgs = get_images_for_instance(instance, filters={'tag:' + CONSISTENT_TAG: 'Yes'})
+    return imgs[-1].id if imgs else None
+
+def remove_old_amis(instance):
+    keep = int(instance.tags[FILTER_TAG]) if (instance.tags.has_key(FILTER_TAG) and instance.tags[FILTER_TAG].isdigit()) else DEFAULT_KEEP
+    latest_consistent_image_id = get_latest_consistent_image_id_for_instance(instance)
+    if not silent and verbose > 0:
+        print "Removing old images for %s, keeping %d" % (instance.id, keep)
+        print "Retrieving images"
+
+    for image in get_images_for_instance(instance)[:-keep]:
+        if not image.id == latest_consistent_image_id:
+            instance.connection.deregister_image(image.id, delete_snapshot=True)
+            if not silent:
+                print "Image %s deregistered" % (image.id)
 
 def main(argv=None):  # IGNORE:C0111
     '''Processing command line options and config file.'''

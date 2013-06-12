@@ -41,7 +41,6 @@ on the days defined by this rule.
 # Standard Modules
 import os
 import sys
-import time
 import pytz
 import ConfigParser
 from datetime import datetime
@@ -53,9 +52,9 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from boto import ec2, utils, exception
 
 __all__ = []
-__version__ = 0.5
+__version__ = 0.51
 __date__ = '2013-05-22'
-__updated__ = '2013-06-11'
+__updated__ = '2013-06-12'
 
 # Settings
 FILTER_TAG = 'Backup'
@@ -129,8 +128,8 @@ def create_ami(instance):
         print "Creating AMI"
     create_time = datetime.now(pytz.utc)
     create_time_ISO = create_time.isoformat()
-    name = (instance.tags['Name'].replace(' ', '_') if instance.tags.has_key('Name') else instance.id) + '_Backup_' + create_time.strftime('%Y%m%dT%H%M%SZ')
-    desc = (instance.tags['Name'] if instance.tags.has_key('Name') else instance.id) + ' Backup on ' + create_time.ctime() + create_time.tzinfo
+    name = '%s_Backup_%s' % ((instance.tags['Name'].replace(' ', '_') if instance.tags.has_key('Name') else instance.id), create_time.strftime('%Y%m%dT%H%M%SZ'))
+    desc = '%s Backup on %s (%s)' % ((instance.tags['Name'] if instance.tags.has_key('Name') else instance.id), create_time.ctime(), str(create_time.tzinfo))
 
     reboot_rule_str = instance.tags[REBOOT_RRULE_TAG] if instance.tags.has_key(REBOOT_RRULE_TAG) else None
     force_reboot = False

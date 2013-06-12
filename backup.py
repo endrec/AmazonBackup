@@ -52,7 +52,7 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from boto import ec2, utils, exception
 
 __all__ = []
-__version__ = 0.51
+__version__ = '0.5.2'
 __date__ = '2013-05-22'
 __updated__ = '2013-06-12'
 
@@ -143,6 +143,8 @@ def create_ami(instance):
 
     no_reboot = ((not force_reboot) and (instance.tags.has_key(NO_REBOOT_TAG) or instance.tags.has_key(REBOOT_RRULE_TAG))) or (instance.id == self_id)
     if not no_reboot:
+        if not silent and verbose > 0:
+            print "Tagging instance %s: %s" % (REBOOT_STAMP_TAG, create_time_ISO)
         instance.add_tag(REBOOT_STAMP_TAG, create_time_ISO)
 
     if not silent and verbose > 1:
@@ -150,7 +152,8 @@ def create_ami(instance):
   Name:        %s
   Description: %s
   Source:      %s
-  ''' % (name, desc, instance.id)
+  No-Reboot:   %s
+  ''' % (name, desc, instance.id, no_reboot)
 
     ami_id = instance.create_image(name, description=desc, no_reboot=no_reboot)
     if not silent:

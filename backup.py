@@ -52,7 +52,7 @@ from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from boto import ec2, utils, exception
 
 __all__ = []
-__version__ = '0.5.2'
+__version__ = '0.5.3'
 __date__ = '2013-05-22'
 __updated__ = '2013-06-12'
 
@@ -330,6 +330,9 @@ USAGE
         ### handle keyboard interrupt ###
         return 0
     except Exception as e:
+        if not silent and verbose > 0:
+            import traceback
+            traceback.print_exc()
         if DEBUG or TESTRUN:
             raise(e)
         indent = len(program_name) * " "
